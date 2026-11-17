@@ -102,11 +102,14 @@ function renderList() {
         <input type="text" value="${c.name.replace(/"/g, '&quot;')}">
         <select>${Object.entries(CREATURES).map(([k, v]) => `<option value="${k}" ${c.creature === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
         <div class="row">
-          ${c.creature === 'glb' ? `<button class="btn small" data-a="glb">${c.glb ? '✓ ' + (c.glbName || 'model') : 'Load .glb'}</button>` : ''}
+          ${c.creature === 'glb' ? `<button class="btn small" data-a="glb">${c.glb ? '✓ ' + (c.glbName || 'model') : 'Load .glb'}</button>
+          <select data-a="face" style="width:auto;margin:0">${[0, 90, 180, 270].map(d => `<option value="${d}" ${(c.facing || 0) == d ? 'selected' : ''}>Face ${d}°</option>`).join('')}</select>` : ''}
           <button class="btn small danger" data-a="del">Delete</button>
         </div>
       </div>`;
     d.querySelector('input').onchange = e => { c.name = e.target.value; save(); };
+    const fs = d.querySelector('[data-a=face]');
+    if (fs) fs.onchange = e => { c.facing = +e.target.value; save(); };
     d.querySelector('select').onchange = e => { c.creature = e.target.value; save(); renderList(); };
     d.querySelector('[data-a=del]').onclick = async () => { cards.splice(i, 1); await save(); await idb.set('compiled', null); renderList(); };
     const g = d.querySelector('[data-a=glb]');
@@ -213,19 +216,28 @@ function makeSprite() {
   };
   return g;
 }
-async function makeGLB(blob) {
+async function makeGLB(blob, facing = 0) {
   const gltf = await new GLTFLoader().loadAsync(URL.createObjectURL(blob));
   const m = gltf.scene;
+  // Skinned meshes are culled by their bind-pose bounds, so animated limbs can vanish at screen edges
+  m.traverse(o => { if (o.isMesh) o.frustumCulled = false; });
   const box = new THREE.Box3().setFromObject(m), size = box.getSize(new THREE.Vector3());
   const s = 1.2 / Math.max(size.y, size.x * .8, size.z * .8);
   m.scale.setScalar(s);
   const b2 = new THREE.Box3().setFromObject(m), c = b2.getCenter(new THREE.Vector3());
   m.position.set(-c.x, -b2.min.y, -c.z);
-  const g = new THREE.Group(); g.add(m);
+  const face = new THREE.Group(); face.rotation.y = THREE.MathUtils.degToRad(facing); face.add(m);
+  const g = new THREE.Group(); g.add(face);
   let mixer = null;
-  if (gltf.animations.length) { mixer = new THREE.AnimationMixer(m); mixer.clipAction(gltf.animations[0]).play(); }
+  if (gltf.animations.length) { mixer = new THREE.AnimationMixer(m); gltf.animations.forEach(a => mixer.clipAction(a).play()); }
   let last = 0;
-  g.userData.update = (t, atk) => { if (mixer) mixer.update(Math.min(t - last, .1)); last = t; g.position.y = atk * .15; g.rotation.y = atk * .4; };
+  g.userData.update = (t, atk) => {
+    if (mixer) mixer.update(Math.min(t - last, .1)); last = t;
+    // Static models (no clips) get a hover + sway idle so they don't look frozen
+    const idle = mixer ? 0 : 1;
+    g.position.y = idle * (.04 + Math.sin(t * 1.6) * .03) + atk * .15;
+    g.rotation.y = idle * Math.sin(t * .6) * .12 + atk * .4;
+  };
   return g;
 }
 function makeSummonFX() {
@@ -271,7 +283,7 @@ $('startBtn').onclick = async () => {
       const c = cards[i];
       const anchor = mindar.addAnchor(i);
       const stage = new THREE.Group(); stage.rotation.x = Math.PI / 2; // creature's +Y = out of the card
-      const creature = c.creature === 'glb' ? await makeGLB(c.glb) : c.creature === 'sprite' ? makeSprite() : makeGolem();
+      const creature = c.creature === 'glb' ? await makeGLB(c.glb, c.facing || 0) : c.creature === 'sprite' ? makeSprite() : makeGolem();
       const fx = makeSummonFX();
       stage.add(creature, fx); anchor.group.add(stage);
       const slot = { c, creature, fx, t0: 0, visible: false, atk0: -9 };
